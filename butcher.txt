@@ -1,0 +1,199 @@
+Butcher I/O:
+	To do my HPI experiments I need to be able to read/write the mailbox
+	I have to get off JGPIO too...
+
+	Read  0xC:	HPI read
+	Write 0xC:	HPI address OR state change (based on high bits)
+
+	R/W   0x8:	Flash read/write (in Flash mode)
+	R/W   0x8:	HPI read/write (in RW mode)
+	R/W   0x8:	HPI mailbox read/write (in mailbox mode)
+
+--->	This is too evil because Jag reset is not guaranteed to handle Flash read
+
+	But it's only temporary -- mailbox R/W will go away soon
+
+	State:
+		ireset0 - Still defaults to 0 -- special mode tied to RESET line
+		bstate(2 downto 0)
+			000 - Flash mode
+			001 - Lock mode (all bus writes are disabled)
+			100 - HPI read/write (A1-0=00)
+			101 - HPI mailbox read/write (A1-0=01)
+			110 - HPI boot mode (A10=10) -- RD/WR are held low
+			111 - HPI status read (A10=11)
+		Flash is inaccessible when bstate(2) = '1' -- good for boot mode!
+
+	4000 - Flash mode
+
+
+Empirical Jaguar bus/GPU evidence:
+	Clock rise at 826ns
+	ROM1 drop at 830ns
+	RW drop at 834ns	Enough time to try an async read!  Awesome!
+	Clock rise at 1578ns	20 clocks @ 37.6ns (actually 37.6010ns)
+	RW rise at 1586ns
+
+	ROM1 rise is always within 2ns
+
+	RW sometimes goes high just 2ns _before_ clock edge -- violating hold time!
+		This only happens after the GPU had already raised ROM1 or GPIO0
+		This happens a lot when the GPU has nothing else pipelined
+	At least ROM1 never seems to have this problem...
+
+	ROM1 typically follows @ 4ns, RW @ 8ns, GPIO0 @ 12ns
+
+	GPIO0 is of course the laggiest, trailing even RW...
+		Follows the edge at 12ns drop, 10ns rise
+		It also spends exactly 6 cycles low per 16-bit word, as predicted
+
+THIS IS ACTUALLY THE BEST ARGUMENT FOR USING OE/WE -- IT WOULD HAVE AVOIDED R+W!
+
+Rethink:
+	Which JCK edge is actually safe?  Neither or both?
+		ROM1 trails the rising edge by 4ns (low) and 2ns (high)
+		RW trails the rising edge by 8ns
+			THIS IS THE ONLY SERIOUS ONE SINCE IT CAN CAUSE READ+WRITE
+		Falling edges get the same near miss treatment
+	THIS IS ONLY SAFE IF THE CPLD HAS ZERO HOLD TIME
+		It appears to, as long as you use a global clock
+	DON'T MIX CONCERNS...  Bus enables are separate from bus latches!
+		Our command processing is now hiding behind bus enable checks -- doh!
+
+->	WE CAN MISS 0, 1, OR 2 CLOCKS WHEN READING PHRASES
+
+Top ten reasons Butcher sucks:
+	1) Confirmed that 32 and 64-bit I/O do not toggle OE, ROM1, or RW
+		Needed A1
+	2) Confirmed that ROM1 and RW occur slightly apart -- not instantly together
+	3) 
+
+Workarounds:
+	1) We can work around this in software for quite a while
+		68K never has this problem, and Flash doesn't either
+	2) Synchronous bus control!
+
+Synchronous bus access is sloppy...  We need to tri-state instantly, not late...
+
+$80-$BF:	Read is always Flash (unless Flash disabled)
+		Write is always Flash
+
+$C0:		Read or write access EZ-HOST data only in data mode
+		Else, read is HPI status and write is command
+
+		Command syntax:
+		J15-14="10":	Joystick address set
+				P15-P7:	"001100000"
+				P6:	J3&J2&J1&J0
+				P5:	J3 and J7
+				P4:	J2 and J6
+				P3:	J1 and J5
+				P2:	J0 and J4
+				P1-P0:	"00"
+->		This wastes a precious OR term on D0-D15...
+
+		J15-14="00":	Address set
+				P15-P12: "0011"
+
+		J15-14="01":	Command set
+				D3-D0:	Set state
+				$4000 = reset
+
+State machines:
+	The bus state machine is a programmable up counter initialized to 0100
+
+	0000:	EZ idle mode (EZ reads and writes are not allowed)
+	0001:	EEPROM write mode (any EZ write comes from rd)
+	0010:	EEPROM read mode (any EZ read latches into rd)
+	0011:	EEPROM command mode (any EZ write comes from rd)
+	0100:	Jag boot mode (EZWR30='0')
+	0101:	EZ boot mode (EZRD='0', EZWR='0', FLOE='1')
+	0110:	Flash write mode
+	1xxx:	EZ read/write mode (x is countup -- 8-number of words remaining)
+
+	00X1 means jd<=rd
+
+	bs(3) is only set by address writes and only cleared by command sets
+
+	Because EEPROM access comes from Jag bus, the bus state machine handles this
+		This works by testing command and data patterns when jgpio='0'
+
+E2 state machine:
+	The heart is the shift register
+	The shift register is clocked by a synchronized copy of jgpio
+
+	Each jgpio rising clock edge causes bits to shift left or read from pd
+	We can't safely clear the register on this clock unless we latch data out...
+		This is because the bs machine is raising EZWR the same cycle
+		We miss our hold times if we reset at the same time!
+	Does clearing the register mean setting it to 1 for TC detection?
+		SPI and UART use bit counters instead -- why not reuse that?
+
+	With a pos counter, we never clear the reg:  no risk of hold time violation!
+
+	Command set:
+
+	eREAD	equ	%110000000		;read from EEPROM
+	eWRITE	equ	%101000000		;Write selected register
+	eEWDS	equ	%100000000		;Erase/Write disable (default)		
+	eEWEN	equ	%100110000		;Erase/write Enable
+
+	So, on e2ck and bs(3-2)!="00" (not EEPROM mode):
+		pos<="0111"	(9th shift will overflow)
+		bs<= "0011"	(command mode)
+	When pos="0000" and bs="0011" we update command
+		We set the new bs based on "00" + rd(7-6)
+			So the do-nothing commands return us to idle mode
+==>			Does not work because we will fall through on next jck...
+		We set up an address write
+		Asynchronously, we force the various bits in rd
+			pd(15-8)="001111111" pd(7)=rd(0)  (these are 16-bit locs)
+			There is no good opportunity for joystick reuse
+	When pos="0000" and bs="0001" we write the data
+		We set the new bs to 0000
+		We set up a data write
+		Asynchronously, pd<=rd
+	When pos="0000" and bs="0010" we read the data
+		We set the new bs to 0000
+		We set up a data read
+		rd<=pd -- This only works if we repeat it...
+
+--->	We need a way to manage state transitions at falling edge (shift time)
+		The shifter needs to be clocked off JCK anyway...
+		So I guess it's all one big blob of elsifs
+
+HPI bus timing adventure:
+	Sadly, HPI has a 2ns data hold time for writes...  We're built for zero hold!
+	Bus hold can help keep us out of trouble
+->		But we have to watch out for the register reset following our cycle!
+	HPI reads look perfectly safe though
+Safe boot:
+	HSS is the only safe boot mode since it does not drive the Flash bus
+		RD30=1, WR31=0 -- always has the advantage of not crashing HPI mode
+	U1.55 is TXD in HSS mode, which is PWM/ezck to us -- already an input!
+	U1.54 is RXD which is fine because RESETIL has a pull-up
+	U1.53 is RTS, which is EZA0 (and U1.52, which is 'Z')
+	U1.44 is CTS, which is TDI (built-in pull-up)
+
+	When booting in HSS mode, CTS/RTS are not enabled
+	
+	However, it looks like RTS drives and CTS receives
+-->	So, we are only guaranteed safe if we set EZA0='Z' in boot mode
+
+	THIS WOULD HAVE BEEN SO MUCH BETTER WITH A SEPARATE RESET LINE
+
+Safe boot alternatives:
+	Booting first into HSS seems too hackable...
+	Bobbing reset seems plausible, but what an ugly power-hungry monster hack!
+	Running a reset state machine is costly and the timing scares me
+	Finding an address that prevents EZ from driving the bus seems too evil
+
+
+	The shift register is clocked by a synchronized copy of jgpio
+		The macrocell that syncs this can help with syncing ezck too
+		(Although ezck violates setup time -- are we metastable-proof?)
+		One way to avoid ezck unpleasantness is to use only jck
+		That costs even more area though
+			We need a 16/50 counter in place of a 16/17 one
+			That assumes /3 counter generating SCK (+1 flop then!)
+			Double-speed would use a 16/25 counter

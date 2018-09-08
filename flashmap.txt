@@ -1,0 +1,109 @@
+flash d9 =  jag d15
+flash d2 =  jag d14
+flash d10 = jag d13
+flash d3 =  jag d12
+flash d11 = jag d11
+flash d4 =  jag d10
+flash d13 = jag d9
+flash d6 =  jag d8
+flash d5 =  jag d7
+flash d12 = jag d6
+flash d15 = jag d5
+flash d1 =  jag d4
+flash d7 =  jag d3
+flash d8 =  jag d2
+flash d14 = jag d1
+flash d0 =  jag d0
+
+flash d15 = jag d5	20
+flash d14 = jag d1	2
+flash d13 = jag d9	200
+flash d12 = jag d6	40
+flash d11 = jag d11	800
+flash d10 = jag d13	2000
+flash d9 =  jag d15	8000
+flash d8 =  jag d2	4
+flash d7 =  jag d3	8
+flash d6 =  jag d8	100
+flash d5 =  jag d7	80
+flash d4 =  jag d10	400
+flash d3 =  jag d12	1000
+flash d2 =  jag d14	4000
+flash d1 =  jag d4	10
+flash d0 =  jag d0	1
+
+Address:
+
+555 = $80036A
+AAA = $801C93
+
+Standard Data:
+$AA = $9098
+$55 = $C501
+$80 = $8008
+$A0 = $8088
+
+Command definitions (+0x8000):
+
+Read/FF:	D599
+Erase/20D0:	8080	8508
+1xPgm/40:	8100
+1xPgm/10:	8400
+2xPgm/E0:	8188
+ID Entry/90:	8408
+Softlock/6001:	8180	8001
+Hardlock/602F:	8180	D091
+Unlock/60D0:	8180	8508
+Read Status/70:	8580
+Clear Stat/50:	8500
+Pgm Proreg/C0:	8108
+Lock Proreg:	FFEF
+CFI Query/98:	9408
+
+Status register definitions:
+
+SR7:		8	ready (0 = busy!)
+SR6:		100	erase suspended
+SR5:		80	error erasing sector
+SR4:		400	error in programming
+SR3:		1000	VPP Low
+SR2:		4000	program suspended
+SR1:		10	program/erase locked out
+SR0:		1	Reserved -- ignore
+
+CFI Register definitions:
+
+10-4C
+
+Address mappings:
+
+	EA2-EA12 	A1-A11
+	EA13-EA21 	A12-A20
+
+	A12-A14 normally don't count, but are special for the boot block
+
+        A1 EA10		A7
+        A2 EA9		A6
+        A3 EA11		A5
+        A4 EA8		A4
+        A5 EA12		A3
+        A6 EA7		A1
+        A7 EA13 	A13	Boot block
+        A8 EA6		A2
+        A9 EA14		A17
+        A10 EA5		A8
+        A11 EA15	A19	
+        A12 EA4		A9
+        A15 EA16	A16	
+        A16 EA3		A10
+        A17 EA17	A15
+        A18 EA2		A11
+        A19 EA18	A20
+
+        B5 EA21		A18
+        B6 EA20		A12	Boot block
+        B7 EA19		A14	Boot block
+        B15 EA1		A0
+
+	Just count by 16KB blocks instead... 1552KB-2.5MB to reach both halves
+		Boot block is 0, 8, 512, 520, 1024, 1032, 1536, 1544
