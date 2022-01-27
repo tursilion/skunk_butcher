@@ -1,3 +1,5 @@
+20070724
+
 This is the VHDL for the Skunkboard's CPLD, nicknamed Butcher. Butcher manages the interface between the Jaguar, the flash, and the USB controller.
 
 The Skunkboard requires LibUSB 0.1 to be available. For Windows, the .lib and header file are provided. 
